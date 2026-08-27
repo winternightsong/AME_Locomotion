@@ -317,7 +317,9 @@ class OnPolicyRunner:
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
         # -- load optimizer if used
-        if load_optimizer and resumed_training:
+        # Model-only migrations intentionally omit optimizer moments because the
+        # parameter topology has changed (for example AME1 -> AME2 global context).
+        if load_optimizer and resumed_training and loaded_dict.get("optimizer_state_dict") is not None:
             # -- algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             # -- RND optimizer if used

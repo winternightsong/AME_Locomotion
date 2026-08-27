@@ -46,6 +46,22 @@ class HfConcentricGapTerrainCfg(HfTerrainBaseCfg):
 
 
 @configclass
+class HfNarrowBridgeTerrainCfg(HfTerrainBaseCfg):
+    """Configuration for a narrow cross bridge over a deep pit."""
+
+    function = loco_hf_terrains.narrow_bridge_terrain
+
+    bridge_width_range: tuple[float, float] = MISSING
+    """Minimum and maximum bridge width; difficulty interpolates from max to min."""
+    bridge_height_max: float = 0.0
+    """Maximum absolute bridge height variation (in m)."""
+    pit_depth: float = -2.0
+    """Depth surrounding the bridge (in m)."""
+    platform_width: float = 2.0
+    """Width of the safe central spawn platform (in m)."""
+
+
+@configclass
 class HfDoubleColumnStakesTerrainCfg(HfTerrainBaseCfg):
     """Configuration for a two-column plum-blossom stakes height field terrain."""
 

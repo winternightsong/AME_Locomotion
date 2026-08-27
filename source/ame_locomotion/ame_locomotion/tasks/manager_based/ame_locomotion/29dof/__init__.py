@@ -2,7 +2,7 @@ import gymnasium as gym
 from ame_locomotion.tasks.manager_based.ame_locomotion import agents
 
 gym.register(
-    id="AME-G1-29DOF-v0",
+    id="AME-KuavoS46-Stage1-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -13,7 +13,7 @@ gym.register(
 )
 
 gym.register(
-    id="AME-G1-29DOF-Play-v0",
+    id="AME-KuavoS46-Stage1-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

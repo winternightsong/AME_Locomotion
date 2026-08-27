@@ -79,7 +79,14 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+try:
+    from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+except ImportError:
+    # Older IsaacLab releases do not expose this helper. It is only needed
+    # when resolving a published checkpoint; explicit --checkpoint playback
+    # remains fully supported.
+    def get_published_pretrained_checkpoint(*args, **kwargs):
+        return None
 
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from exporter import export_policy_as_jit, export_policy_as_onnx
@@ -89,6 +96,10 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import ame_locomotion.tasks  # noqa: F401
+try:
+    import leju_robot  # noqa: F401
+except ImportError:
+    pass
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -101,6 +112,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    if args_cli.video:
+        # Rough terrain places env_0 away from the world origin. Track the
+        # robot root so recorded playback contains the policy rather than an
+        # empty patch of terrain.
+        env_cfg.viewer.origin_type = "asset_root"
+        env_cfg.viewer.env_index = 0
+        env_cfg.viewer.asset_name = "robot"
+        env_cfg.viewer.eye = (3.5, 3.5, 2.0)
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.65)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here

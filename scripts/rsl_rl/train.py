@@ -107,6 +107,10 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import ame_locomotion.tasks  # noqa: F401
+try:
+    import leju_robot  # noqa: F401
+except ImportError:
+    pass
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True

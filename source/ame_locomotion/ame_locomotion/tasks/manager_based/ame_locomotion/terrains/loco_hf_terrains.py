@@ -218,13 +218,45 @@ def double_column_stakes_terrain(
 
 
 @height_field_to_mesh
+def narrow_bridge_terrain(
+    difficulty: float, cfg: loco_hf_terrains_cfg.HfNarrowBridgeTerrainCfg
+) -> np.ndarray:
+    """Generate two intersecting narrow beams from a safe central platform."""
+
+    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
+    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
+    bridge_width = cfg.bridge_width_range[1] - difficulty * (
+        cfg.bridge_width_range[1] - cfg.bridge_width_range[0]
+    )
+    bridge_width_px = max(1, int(round(bridge_width / cfg.horizontal_scale)))
+    platform_width_px = max(1, int(round(cfg.platform_width / cfg.horizontal_scale)))
+    pit_depth_px = int(round(cfg.pit_depth / cfg.vertical_scale))
+    height_max_px = max(0, int(round(cfg.bridge_height_max / cfg.vertical_scale)))
+
+    hf_raw = np.full((width_pixels, length_pixels), pit_depth_px, dtype=float)
+    cx, cy = width_pixels // 2, length_pixels // 2
+    half_bridge = bridge_width_px // 2
+    beam_height = np.random.randint(-height_max_px, height_max_px + 1) if height_max_px else 0
+
+    hf_raw[:, max(0, cy - half_bridge):min(length_pixels, cy - half_bridge + bridge_width_px)] = beam_height
+    hf_raw[max(0, cx - half_bridge):min(width_pixels, cx - half_bridge + bridge_width_px), :] = beam_height
+
+    half_platform = platform_width_px // 2
+    hf_raw[
+        max(0, cx - half_platform):min(width_pixels, cx - half_platform + platform_width_px),
+        max(0, cy - half_platform):min(length_pixels, cy - half_platform + platform_width_px),
+    ] = 0
+    return np.rint(hf_raw).astype(np.int16)
+
+
+@height_field_to_mesh
 def concentric_gap_terrain(difficulty: float, cfg: loco_hf_terrains_cfg.HfConcentricGapTerrainCfg) -> np.ndarray:
     """
     Generate concentric gap terrain with a center platform.
     Gap width is difficulty-dependent and gap depth is fixed.
     """
     # Gap depth in pixels
-    gap_depth = int(2.0 / cfg.vertical_scale)
+    gap_depth = abs(int(cfg.gap_depth / cfg.vertical_scale))
     # Gap width varies with difficulty
     gap_width = cfg.gap_width_range[0] + difficulty * (cfg.gap_width_range[1] - cfg.gap_width_range[0])
     gap_width = int(gap_width / cfg.horizontal_scale)

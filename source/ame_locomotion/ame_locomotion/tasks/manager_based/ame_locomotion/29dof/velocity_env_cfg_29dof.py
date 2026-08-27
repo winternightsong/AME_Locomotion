@@ -32,9 +32,12 @@ FINETUNE = False
 ##
 # Pre-defined configs
 ##
-from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import ROUGH_TERRAINS_CFG  # isort: skip
+from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import (  # isort: skip
+    ROUGH_TERRAINS_CFG,
+    S46_HARD_TERRAINS_CFG,
+)
 from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.finetune_terrain_cfg import FINETUNE_ROUGH_TERRAINS_CFG
-from ame_locomotion.tasks.manager_based.ame_locomotion.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from ame_locomotion.tasks.manager_based.ame_locomotion.assets.robots.kuavo_s46 import KUAVO_S46_CFG as ROBOT_CFG
 ##
 # Scene definition
 ##
@@ -48,8 +51,11 @@ class MySceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else ROUGH_TERRAINS_CFG,
-        max_init_terrain_level=5,
+        terrain_generator=FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else S46_HARD_TERRAINS_CFG,
+        # Kuavo S46 starts from the easiest curriculum row in LejuLab-Train.
+        # Let the terrain curriculum promote successful environments instead of
+        # spawning an untrained policy directly on levels 0--5.
+        max_init_terrain_level=0,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -68,7 +74,7 @@ class MySceneCfg(InteractiveSceneCfg):
     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     # sensors
     height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/torso_link",
+        prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[1.6, 1.0]),  # 0.05m resolution, 1.6m x 1.0m, grid 33x21
@@ -115,7 +121,9 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=0.25, use_default_offset=True)
+    joint_pos = mdp.JointPositionActionCfg(
+        asset_name="robot", joint_names=[".*"], preserve_order=True, scale=0.25, use_default_offset=True
+    )
 
 
 @configclass
@@ -186,7 +194,7 @@ class EventCfg:
         func=mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "mass_distribution_params": (-1.0, 3.0),
             "operation": "add",
         },
@@ -196,7 +204,7 @@ class EventCfg:
         func=mdp.randomize_rigid_body_com,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "com_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.01, 0.01)},
         },
     )
@@ -206,7 +214,7 @@ class EventCfg:
         func=mdp.apply_external_force_torque,
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "force_range": (0.0, 0.0),
             "torque_range": (-0.0, 0.0),
         },
@@ -233,7 +241,9 @@ class EventCfg:
         mode="reset",
         params={
             "position_range": (1.0, 1.0),
-            "velocity_range": (-1.0, 1.0),  # "velocity_range": (0.0, 0.0),
+            # Match LejuLab's S46 reset. A [-1, 1] rad/s impulse on all 26
+            # joints makes the nominal zero-action stance collapse immediately.
+            "velocity_range": (0.0, 0.0),
         },
     )
 
@@ -274,7 +284,9 @@ class RewardsCfg:
         weight=-1.0,
         params={
             "threshold": 1,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["(?!.*ankle.*).*"]), # All body parts except feet
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["leg_[l,r][1-5]_link", "base_link", "zarm_.*_link"]
+            ),
         },
     )
     dof_torques_l2 = RewTerm(
@@ -306,7 +318,7 @@ class RewardsCfg:
         weight=0.25,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
             "threshold": 0.6,
         },
     )
@@ -314,22 +326,22 @@ class RewardsCfg:
         func=mdp.air_time_variance_penalty,
         weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
         },
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="leg_[l,r]6_link"),
         },
     )
     feet_stumble = RewTerm(
         func=mdp.feet_stumble,
         weight=-1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
         },
     )    
     
@@ -338,7 +350,7 @@ class RewardsCfg:
         weight=-1.0,
         params={
             "threshold": 0.2,
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"), 
+            "asset_cfg": SceneEntityCfg("robot", body_names="leg_[l,r]6_link"),
         },
     )
     # -- coordination (cross-body coordination)
@@ -349,12 +361,12 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "coord_joints": [
                 # Cross-side coordination: left leg forward swing with right arm forward swing
-                ["left_hip_pitch_joint", "right_shoulder_pitch_joint"],
-                ["right_hip_pitch_joint", "left_shoulder_pitch_joint"],
+                ["leg_l3_joint", "zarm_r1_joint"],
+                ["leg_r3_joint", "zarm_l1_joint"],
             ],
             "coord_signs": [
-                [1.0, 1.0],  # Left hip and right shoulder move in the same direction
-                [1.0, 1.0],  # Right hip and left shoulder move in the same direction
+                [1.0, 1.0],  # Left hip pitch and right shoulder pitch move together.
+                [1.0, 1.0],  # Right hip pitch and left shoulder pitch move together.
             ],
         },
     )
@@ -362,7 +374,7 @@ class RewardsCfg:
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["leg_[l,r][1,2]_joint"])},
     )
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -371,25 +383,12 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[
-                    ".*_shoulder_.*_joint",
-                    ".*_elbow_joint",
-                    ".*_wrist_.*",
+                    "zarm_.*_joint",
                 ],
             )
         },
     )
-    joint_deviation_waists = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    "waist.*",
-                ],
-            )
-        },
-    )
+    joint_deviation_waists = None
 
 
 @configclass
@@ -402,16 +401,7 @@ class TerminationsCfg:
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces", 
-                body_names=[
-                    "torso_link",
-                    ".*_shoulder_.*_link",
-                    ".*_hip_.*_link",
-                    ".*_knee_link",
-                    ".*_elbow_link",
-                    "waist_.*_link",
-                    "pelvis",
-                ]
-                # body_names=["torso_link"]
+                body_names=["base_link"]
             ), "threshold": 1.0},
     )
 
@@ -516,7 +506,6 @@ class G1RoughEnvCfg(ManagerBasedRLEnvCfg):
             self.rewards.joint_coordination.weight = -0.5
             self.rewards.joint_deviation_hip.weight = -0.1
             self.rewards.joint_deviation_arms.weight = -0.3
-            self.rewards.joint_deviation_waists.weight = -1.0
         else:
             # Randomization
             self.events.push_robot = None
@@ -551,7 +540,6 @@ class G1RoughEnvCfg(ManagerBasedRLEnvCfg):
             self.rewards.joint_coordination.weight = -0.2
             self.rewards.joint_deviation_hip.weight = -0.1
             self.rewards.joint_deviation_arms.weight = -0.3
-            self.rewards.joint_deviation_waists.weight = -1.0
         
 
 @configclass
@@ -567,7 +555,7 @@ class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
         
         # add visualization camera only for play
         self.scene.visualize_cam = CameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/visualize_cam",
+            prim_path="{ENV_REGEX_NS}/Robot/base_link/visualize_cam",
             update_period=0.1,
             height=480,
             width=640,
@@ -654,4 +642,3 @@ class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
         # remove random pushing
         self.events.base_external_force_torque = None
         self.events.push_robot = None
-

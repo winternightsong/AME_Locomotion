@@ -1,8 +1,12 @@
-# AME Locomotion Reproduction (Isaac Lab + Unitree G1)
+# AME Locomotion — for kuavo (Isaac Lab + Kuavo S46)
 
 Language: [中文](#中文) | [English](#english)
 
 ---
+
+## for kuavo
+
+本版本将 AME Locomotion 适配到 Leju Kuavo S46，包含 S46 机器人资产、延迟执行器模型、困难地形扩展、AME2 全局上下文权重迁移工具，以及对应的训练和回放配置。运行基线为 Isaac Sim 5.1 / IsaacLab 2.3。
 
 ## 中文
 
@@ -12,7 +16,7 @@ Language: [中文](#中文) | [English](#english)
 基于注意力的地形编码器方法 AME 的复现实现。
 
 - 仿真与训练平台: NVIDIA Isaac Sim 5.1.0 + Isaac Lab 2.3.0
-- 机器人平台: Unitree G1 29DoF
+- 机器人平台: Leju Kuavo S46 26DoF（保留原 Unitree G1 配置作为上游参考）
 - 强化学习框架: RSL-RL (含本项目自定义网络扩展)
 
 核心目标是基于高程图和注意力机制，学习具备更强地形泛化能力的腿式运动策略。
@@ -115,7 +119,7 @@ This repository reproduces the Attention-Based Map Encoding (AME) method from th
 Attention-Based Map Encoding for Learning Generalized Legged Locomotion.
 
 - Simulation and training stack: NVIDIA Isaac Sim 5.0.0 + Isaac Lab 2.3.0
-- Robot platform: Unitree G1 29DoF
+- Robot platform: Leju Kuavo S46 26DoF (the upstream Unitree G1 configuration is retained as a reference)
 - RL stack: RSL-RL (with custom network extensions in this project)
 
 The goal is to learn robust legged locomotion policies with stronger terrain generalization using
