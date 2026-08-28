@@ -8,6 +8,34 @@ Language: [中文](#中文) | [English](#english)
 
 本版本将 AME Locomotion 适配到 Leju Kuavo S46，包含 S46 机器人资产、延迟执行器模型、困难地形扩展、AME2 全局上下文权重迁移工具，以及对应的训练和回放配置。运行基线为 Isaac Sim 5.1 / IsaacLab 2.3。
 
+### S46 model-9000 reproducibility
+
+`pretrained/s46_ame2_model9000.pt` is the checkpoint produced by the GPU7
+AME2 run on 2026-08-27.  Its training environment is now fully vendored under
+`s46_native/`; no checkout of LejuLab-Train is required.
+
+The default S46 task IDs intentionally point to that exact environment:
+
+- `AME-KuavoS46-Stage1-v0`: noisy stage-1 training environment.
+- `AME-KuavoS46-Stage1-Play-v0`: deterministic playback environment.
+- `AME-KuavoS46-Stage1-Legacy-v0`: the former repository-native AME reward
+  configuration, retained for comparison only. It is not compatible with
+  `s46_ame2_model9000.pt` despite having the same observation dimensions.
+
+Resume training with the local AME RSL-RL package on `PYTHONPATH`:
+
+```bash
+PYTHONPATH="$PWD/rsl_rl:${PYTHONPATH}" python scripts/rsl_rl/train.py \
+  --task AME-KuavoS46-Stage1-v0 \
+  --resume --load_run <run-directory> --checkpoint model_9000.pt \
+  --headless
+```
+
+Important compatibility rule: a checkpoint must not be moved between the
+default S46 task and the `Legacy` task merely because both actors have the
+same input size. Their observation scaling, contact material, randomization,
+rewards, and terminations differ.
+
 ## 中文
 
 ### 项目简介

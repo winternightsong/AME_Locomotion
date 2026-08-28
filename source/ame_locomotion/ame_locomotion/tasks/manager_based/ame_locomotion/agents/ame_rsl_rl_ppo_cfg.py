@@ -7,6 +7,13 @@ from isaaclab.utils import configclass
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
 
+
+@configclass
+class KuavoS46AME2ActorCriticCfg(RslRlPpoActorCriticCfg):
+    """AME terrain encoder with the AME2 global-context branch enabled."""
+
+    attach_global: bool = True
+
 @configclass
 class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
@@ -36,4 +43,23 @@ class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+    )
+
+
+@configclass
+class KuavoS46AME2PPORunnerCfg(G1AMEPPORunnerCfg):
+    """Exact policy configuration used by the model-9000 S46 run."""
+
+    max_iterations = 15000
+    experiment_name = "kuavo_s46_ame2_stage1_native"
+    policy = KuavoS46AME2ActorCriticCfg(
+        class_name="ActorCriticEncoder",
+        init_noise_std=1.0,
+        noise_std_type="log",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        attach_global=True,
     )

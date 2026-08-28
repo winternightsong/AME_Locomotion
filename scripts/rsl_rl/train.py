@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
 import sys
 
 from isaaclab.app import AppLauncher
@@ -192,11 +193,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    # IsaacLab-RL 0.5.x adds algorithm fields that are not accepted by the
+    # AME-pinned PPO runtime. Filter only unsupported compatibility fields so
+    # the repository remains runnable with both the GPU7 and newer stacks.
+    runner_cfg = agent_cfg.to_dict()
+    if agent_cfg.class_name == "OnPolicyRunner":
+        from rsl_rl.algorithms import PPO
+
+        ppo_parameters = set(inspect.signature(PPO.__init__).parameters)
+        algorithm_cfg = runner_cfg.get("algorithm", {})
+        unsupported_keys = sorted(set(algorithm_cfg) - ppo_parameters - {"class_name"})
+        for key in unsupported_keys:
+            algorithm_cfg.pop(key)
+        if unsupported_keys:
+            print(f"[INFO] Ignoring unsupported PPO compatibility fields: {unsupported_keys}")
+
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner = OnPolicyRunner(env, runner_cfg, log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner = DistillationRunner(env, runner_cfg, log_dir=log_dir, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     # write git state to logs

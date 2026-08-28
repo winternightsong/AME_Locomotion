@@ -1,0 +1,571 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   rsl_rl/rsl_rl/runners/on_policy_runner.py
+	modified:   run_train.sh
+	modified:   scripts/rsl_rl/play.py
+	modified:   scripts/rsl_rl/train.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/__init__.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/agents/ame_rsl_rl_ppo_cfg.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains_cfg.py
+	modified:   source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	pretrained/s46_ame2_from_model36500.pt
+	rsl_rl/rsl_rl/runners/on_policy_runner.py.pre_model_only_ame2_20260827
+	scripts/rsl_rl/migrate_s46_ame1_to_ame2.py
+	scripts/rsl_rl/play_render.py
+	scripts/rsl_rl/stage2_eval.py
+	scripts/zero_agent_stability.py
+	source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py.bak_20260826_perterrain_metrics
+	source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/actuators/
+	source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/assets/robots/kuavo_s46.py
+	source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py.bak_20260826_perterrain_metrics
+	source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py.bak_20260826_perterrain_metrics
+
+no changes added to commit (use "git add" and/or "git commit -a")
+
+
+--- git diff ---
+diff --git a/rsl_rl/rsl_rl/runners/on_policy_runner.py b/rsl_rl/rsl_rl/runners/on_policy_runner.py
+index 573007b..e28a9b5 100644
+--- a/rsl_rl/rsl_rl/runners/on_policy_runner.py
++++ b/rsl_rl/rsl_rl/runners/on_policy_runner.py
+@@ -317,7 +317,9 @@ class OnPolicyRunner:
+         if hasattr(self.alg, "rnd") and self.alg.rnd:
+             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
+         # -- load optimizer if used
+-        if load_optimizer and resumed_training:
++        # Model-only migrations intentionally omit optimizer moments because the
++        # parameter topology has changed (for example AME1 -> AME2 global context).
++        if load_optimizer and resumed_training and loaded_dict.get("optimizer_state_dict") is not None:
+             # -- algorithm optimizer
+             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+             # -- RND optimizer if used
+diff --git a/run_train.sh b/run_train.sh
+index f87f017..bd3da3c 100644
+--- a/run_train.sh
++++ b/run_train.sh
+@@ -1,9 +1,9 @@
+ #!/bin/bash
+ python scripts/rsl_rl/train.py \
+---task AME-G1-29DOF-v0 \
++--task AME-KuavoS46-Stage1-v0 \
+ --max_iterations 15000 \
+ --headless \
+ # --run_name  \
+ # --resume \
+ # --load_run  \
+-# --checkpoint  \
+\ No newline at end of file
++# --checkpoint  \
+diff --git a/scripts/rsl_rl/play.py b/scripts/rsl_rl/play.py
+index e1b71a2..bf1b2f6 100644
+--- a/scripts/rsl_rl/play.py
++++ b/scripts/rsl_rl/play.py
+@@ -79,7 +79,14 @@ from isaaclab.envs import (
+ )
+ from isaaclab.utils.assets import retrieve_file_path
+ from isaaclab.utils.dict import print_dict
+-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
++try:
++    from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
++except ImportError:
++    # Older IsaacLab releases do not expose this helper. It is only needed
++    # when resolving a published checkpoint; explicit --checkpoint playback
++    # remains fully supported.
++    def get_published_pretrained_checkpoint(*args, **kwargs):
++        return None
+
+ from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+ from exporter import export_policy_as_jit, export_policy_as_onnx
+@@ -89,6 +96,10 @@ from isaaclab_tasks.utils import get_checkpoint_path
+ from isaaclab_tasks.utils.hydra import hydra_task_config
+
+ import ame_locomotion.tasks  # noqa: F401
++try:
++    import leju_robot  # noqa: F401
++except ImportError:
++    pass
+
+
+ @hydra_task_config(args_cli.task, args_cli.agent)
+@@ -101,6 +112,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+     # override configurations with non-hydra CLI arguments
+     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
++    if args_cli.video:
++        # Rough terrain places env_0 away from the world origin. Track the
++        # robot root so recorded playback contains the policy rather than an
++        # empty patch of terrain.
++        env_cfg.viewer.origin_type = "asset_root"
++        env_cfg.viewer.env_index = 0
++        env_cfg.viewer.asset_name = "robot"
++        env_cfg.viewer.eye = (3.5, 3.5, 2.0)
++        env_cfg.viewer.lookat = (0.0, 0.0, 0.65)
+
+     # set the environment seed
+     # note: certain randomizations occur in the environment initialization so we set the seed here
+diff --git a/scripts/rsl_rl/train.py b/scripts/rsl_rl/train.py
+index c6e2ee2..f5b8767 100644
+--- a/scripts/rsl_rl/train.py
++++ b/scripts/rsl_rl/train.py
+@@ -107,6 +107,10 @@ from isaaclab_tasks.utils import get_checkpoint_path
+ from isaaclab_tasks.utils.hydra import hydra_task_config
+
+ import ame_locomotion.tasks  # noqa: F401
++try:
++    import leju_robot  # noqa: F401
++except ImportError:
++    pass
+
+ torch.backends.cuda.matmul.allow_tf32 = True
+ torch.backends.cudnn.allow_tf32 = True
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/__init__.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/__init__.py
+index 78ff6cc..32ac42f 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/__init__.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/__init__.py
+@@ -2,7 +2,7 @@ import gymnasium as gym
+ from ame_locomotion.tasks.manager_based.ame_locomotion import agents
+
+ gym.register(
+-    id="AME-G1-29DOF-v0",
++    id="AME-KuavoS46-Stage1-v0",
+     entry_point="isaaclab.envs:ManagerBasedRLEnv",
+     disable_env_checker=True,
+     kwargs={
+@@ -13,7 +13,7 @@ gym.register(
+ )
+
+ gym.register(
+-    id="AME-G1-29DOF-Play-v0",
++    id="AME-KuavoS46-Stage1-Play-v0",
+     entry_point="isaaclab.envs:ManagerBasedRLEnv",
+     disable_env_checker=True,
+     kwargs={
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py
+index 2c77fb5..f6acecf 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py
+@@ -32,9 +32,12 @@ FINETUNE = False
+ ##
+ # Pre-defined configs
+ ##
+-from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import ROUGH_TERRAINS_CFG  # isort: skip
++from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import (  # isort: skip
++    ROUGH_TERRAINS_CFG,
++    S46_HARD_TERRAINS_CFG,
++)
+ from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.finetune_terrain_cfg import FINETUNE_ROUGH_TERRAINS_CFG
+-from ame_locomotion.tasks.manager_based.ame_locomotion.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
++from ame_locomotion.tasks.manager_based.ame_locomotion.assets.robots.kuavo_s46 import KUAVO_S46_CFG as ROBOT_CFG
+ ##
+ # Scene definition
+ ##
+@@ -48,8 +51,11 @@ class MySceneCfg(InteractiveSceneCfg):
+     terrain = TerrainImporterCfg(
+         prim_path="/World/ground",
+         terrain_type="generator",
+-        terrain_generator=FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else ROUGH_TERRAINS_CFG,
+-        max_init_terrain_level=5,
++        terrain_generator=FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else S46_HARD_TERRAINS_CFG,
++        # Kuavo S46 starts from the easiest curriculum row in LejuLab-Train.
++        # Let the terrain curriculum promote successful environments instead of
++        # spawning an untrained policy directly on levels 0--5.
++        max_init_terrain_level=0,
+         collision_group=-1,
+         physics_material=sim_utils.RigidBodyMaterialCfg(
+             friction_combine_mode="multiply",
+@@ -68,7 +74,7 @@ class MySceneCfg(InteractiveSceneCfg):
+     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+     # sensors
+     height_scanner = RayCasterCfg(
+-        prim_path="{ENV_REGEX_NS}/Robot/torso_link",
++        prim_path="{ENV_REGEX_NS}/Robot/base_link",
+         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+         ray_alignment="yaw",
+         pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[1.6, 1.0]),  # 0.05m resolution, 1.6m x 1.0m, grid 33x21
+@@ -115,7 +121,9 @@ class CommandsCfg:
+ class ActionsCfg:
+     """Action specifications for the MDP."""
+
+-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=0.25, use_default_offset=True)
++    joint_pos = mdp.JointPositionActionCfg(
++        asset_name="robot", joint_names=[".*"], preserve_order=True, scale=0.25, use_default_offset=True
++    )
+
+
+ @configclass
+@@ -186,7 +194,7 @@ class EventCfg:
+         func=mdp.randomize_rigid_body_mass,
+         mode="startup",
+         params={
+-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
++            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+             "mass_distribution_params": (-1.0, 3.0),
+             "operation": "add",
+         },
+@@ -196,7 +204,7 @@ class EventCfg:
+         func=mdp.randomize_rigid_body_com,
+         mode="startup",
+         params={
+-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
++            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+             "com_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.01, 0.01)},
+         },
+     )
+@@ -206,7 +214,7 @@ class EventCfg:
+         func=mdp.apply_external_force_torque,
+         mode="reset",
+         params={
+-            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
++            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+             "force_range": (0.0, 0.0),
+             "torque_range": (-0.0, 0.0),
+         },
+@@ -233,7 +241,9 @@ class EventCfg:
+         mode="reset",
+         params={
+             "position_range": (1.0, 1.0),
+-            "velocity_range": (-1.0, 1.0),  # "velocity_range": (0.0, 0.0),
++            # Match LejuLab's S46 reset. A [-1, 1] rad/s impulse on all 26
++            # joints makes the nominal zero-action stance collapse immediately.
++            "velocity_range": (0.0, 0.0),
+         },
+     )
+
+@@ -274,7 +284,9 @@ class RewardsCfg:
+         weight=-1.0,
+         params={
+             "threshold": 1,
+-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["(?!.*ankle.*).*"]), # All body parts except feet
++            "sensor_cfg": SceneEntityCfg(
++                "contact_forces", body_names=["leg_[l,r][1-5]_link", "base_link", "zarm_.*_link"]
++            ),
+         },
+     )
+     dof_torques_l2 = RewTerm(
+@@ -306,7 +318,7 @@ class RewardsCfg:
+         weight=0.25,
+         params={
+             "command_name": "base_velocity",
+-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
+             "threshold": 0.6,
+         },
+     )
+@@ -314,22 +326,22 @@ class RewardsCfg:
+         func=mdp.air_time_variance_penalty,
+         weight=-0.1,
+         params={
+-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
+         },
+     )
+     feet_slide = RewTerm(
+         func=mdp.feet_slide,
+         weight=-0.1,
+         params={
+-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
++            "asset_cfg": SceneEntityCfg("robot", body_names="leg_[l,r]6_link"),
+         },
+     )
+     feet_stumble = RewTerm(
+         func=mdp.feet_stumble,
+         weight=-1.0,
+         params={
+-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="leg_[l,r]6_link"),
+         },
+     )
+
+@@ -338,7 +350,7 @@ class RewardsCfg:
+         weight=-1.0,
+         params={
+             "threshold": 0.2,
+-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
++            "asset_cfg": SceneEntityCfg("robot", body_names="leg_[l,r]6_link"),
+         },
+     )
+     # -- coordination (cross-body coordination)
+@@ -349,12 +361,12 @@ class RewardsCfg:
+             "asset_cfg": SceneEntityCfg("robot"),
+             "coord_joints": [
+                 # Cross-side coordination: left leg forward swing with right arm forward swing
+-                ["left_hip_pitch_joint", "right_shoulder_pitch_joint"],
+-                ["right_hip_pitch_joint", "left_shoulder_pitch_joint"],
++                ["leg_l3_joint", "zarm_r1_joint"],
++                ["leg_r3_joint", "zarm_l1_joint"],
+             ],
+             "coord_signs": [
+-                [1.0, 1.0],  # Left hip and right shoulder move in the same direction
+-                [1.0, 1.0],  # Right hip and left shoulder move in the same direction
++                [1.0, 1.0],  # Left hip pitch and right shoulder pitch move together.
++                [1.0, 1.0],  # Right hip pitch and left shoulder pitch move together.
+             ],
+         },
+     )
+@@ -362,7 +374,7 @@ class RewardsCfg:
+     joint_deviation_hip = RewTerm(
+         func=mdp.joint_deviation_l1,
+         weight=-0.1,
+-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["leg_[l,r][1,2]_joint"])},
+     )
+     joint_deviation_arms = RewTerm(
+         func=mdp.joint_deviation_l1,
+@@ -371,25 +383,12 @@ class RewardsCfg:
+             "asset_cfg": SceneEntityCfg(
+                 "robot",
+                 joint_names=[
+-                    ".*_shoulder_.*_joint",
+-                    ".*_elbow_joint",
+-                    ".*_wrist_.*",
+-                ],
+-            )
+-        },
+-    )
+-    joint_deviation_waists = RewTerm(
+-        func=mdp.joint_deviation_l1,
+-        weight=-1.0,
+-        params={
+-            "asset_cfg": SceneEntityCfg(
+-                "robot",
+-                joint_names=[
+-                    "waist.*",
++                    "zarm_.*_joint",
+                 ],
+             )
+         },
+     )
++    joint_deviation_waists = None
+
+
+ @configclass
+@@ -402,16 +401,7 @@ class TerminationsCfg:
+         params={
+             "sensor_cfg": SceneEntityCfg(
+                 "contact_forces",
+-                body_names=[
+-                    "torso_link",
+-                    ".*_shoulder_.*_link",
+-                    ".*_hip_.*_link",
+-                    ".*_knee_link",
+-                    ".*_elbow_link",
+-                    "waist_.*_link",
+-                    "pelvis",
+-                ]
+-                # body_names=["torso_link"]
++                body_names=["base_link"]
+             ), "threshold": 1.0},
+     )
+
+@@ -516,7 +506,6 @@ class G1RoughEnvCfg(ManagerBasedRLEnvCfg):
+             self.rewards.joint_coordination.weight = -0.5
+             self.rewards.joint_deviation_hip.weight = -0.1
+             self.rewards.joint_deviation_arms.weight = -0.3
+-            self.rewards.joint_deviation_waists.weight = -1.0
+         else:
+             # Randomization
+             self.events.push_robot = None
+@@ -551,7 +540,6 @@ class G1RoughEnvCfg(ManagerBasedRLEnvCfg):
+             self.rewards.joint_coordination.weight = -0.2
+             self.rewards.joint_deviation_hip.weight = -0.1
+             self.rewards.joint_deviation_arms.weight = -0.3
+-            self.rewards.joint_deviation_waists.weight = -1.0
+
+
+ @configclass
+@@ -567,7 +555,7 @@ class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
+
+         # add visualization camera only for play
+         self.scene.visualize_cam = CameraCfg(
+-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/visualize_cam",
++            prim_path="{ENV_REGEX_NS}/Robot/base_link/visualize_cam",
+             update_period=0.1,
+             height=480,
+             width=640,
+@@ -654,4 +642,3 @@ class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
+         # remove random pushing
+         self.events.base_external_force_torque = None
+         self.events.push_robot = None
+-
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/agents/ame_rsl_rl_ppo_cfg.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/agents/ame_rsl_rl_ppo_cfg.py
+index 08256e7..ebeb894 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/agents/ame_rsl_rl_ppo_cfg.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/agents/ame_rsl_rl_ppo_cfg.py
+@@ -12,10 +12,11 @@ class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+     num_steps_per_env = 24
+     max_iterations = 10000
+     save_interval = 100
+-    experiment_name = "g1_ame"
++    experiment_name = "kuavo_s46_ame_stage1"
+     policy = RslRlPpoActorCriticCfg(
+         class_name="ActorCriticEncoder",
+         init_noise_std=1.0,
++        noise_std_type="log",
+         actor_obs_normalization=False,
+         critic_obs_normalization=False,
+         actor_hidden_dims=[512, 256, 128],
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py
+index ba8055a..4f4df44 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/mdp/__init__.py
+@@ -4,4 +4,3 @@ from isaaclab_tasks.manager_based.locomotion.velocity.mdp import *  # noqa: F401
+ from .commands import *  # noqa: F401, F403
+ from .observations import *  # noqa: F401, F403
+ from .rewards import *  # noqa: F401, F403
+-
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains.py
+index 8a63c4f..84f1d02 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains.py
+@@ -217,6 +217,38 @@ def double_column_stakes_terrain(
+     return np.rint(hf_raw).astype(np.int16)
+
+
++@height_field_to_mesh
++def narrow_bridge_terrain(
++    difficulty: float, cfg: loco_hf_terrains_cfg.HfNarrowBridgeTerrainCfg
++) -> np.ndarray:
++    """Generate two intersecting narrow beams from a safe central platform."""
++
++    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
++    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
++    bridge_width = cfg.bridge_width_range[1] - difficulty * (
++        cfg.bridge_width_range[1] - cfg.bridge_width_range[0]
++    )
++    bridge_width_px = max(1, int(round(bridge_width / cfg.horizontal_scale)))
++    platform_width_px = max(1, int(round(cfg.platform_width / cfg.horizontal_scale)))
++    pit_depth_px = int(round(cfg.pit_depth / cfg.vertical_scale))
++    height_max_px = max(0, int(round(cfg.bridge_height_max / cfg.vertical_scale)))
++
++    hf_raw = np.full((width_pixels, length_pixels), pit_depth_px, dtype=float)
++    cx, cy = width_pixels // 2, length_pixels // 2
++    half_bridge = bridge_width_px // 2
++    beam_height = np.random.randint(-height_max_px, height_max_px + 1) if height_max_px else 0
++
++    hf_raw[:, max(0, cy - half_bridge):min(length_pixels, cy - half_bridge + bridge_width_px)] = beam_height
++    hf_raw[max(0, cx - half_bridge):min(width_pixels, cx - half_bridge + bridge_width_px), :] = beam_height
++
++    half_platform = platform_width_px // 2
++    hf_raw[
++        max(0, cx - half_platform):min(width_pixels, cx - half_platform + platform_width_px),
++        max(0, cy - half_platform):min(length_pixels, cy - half_platform + platform_width_px),
++    ] = 0
++    return np.rint(hf_raw).astype(np.int16)
++
++
+ @height_field_to_mesh
+ def concentric_gap_terrain(difficulty: float, cfg: loco_hf_terrains_cfg.HfConcentricGapTerrainCfg) -> np.ndarray:
+     """
+@@ -224,7 +256,7 @@ def concentric_gap_terrain(difficulty: float, cfg: loco_hf_terrains_cfg.HfConcen
+     Gap width is difficulty-dependent and gap depth is fixed.
+     """
+     # Gap depth in pixels
+-    gap_depth = int(2.0 / cfg.vertical_scale)
++    gap_depth = abs(int(cfg.gap_depth / cfg.vertical_scale))
+     # Gap width varies with difficulty
+     gap_width = cfg.gap_width_range[0] + difficulty * (cfg.gap_width_range[1] - cfg.gap_width_range[0])
+     gap_width = int(gap_width / cfg.horizontal_scale)
+@@ -362,4 +394,4 @@ def alternate_column_stakes_terrain(
+     y2 = (length_pixels + platform_width_px) // 2
+     hf_raw[x1:x2, y1:y2] = 0
+
+-    return np.rint(hf_raw).astype(np.int16)
+\ No newline at end of file
++    return np.rint(hf_raw).astype(np.int16)
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains_cfg.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains_cfg.py
+index d0dc98e..81a8c08 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains_cfg.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/loco_hf_terrains_cfg.py
+@@ -45,6 +45,22 @@ class HfConcentricGapTerrainCfg(HfTerrainBaseCfg):
+     """The width of the square platform at the center of the terrain. Defaults to 1.0."""
+
+
++@configclass
++class HfNarrowBridgeTerrainCfg(HfTerrainBaseCfg):
++    """Configuration for a narrow cross bridge over a deep pit."""
++
++    function = loco_hf_terrains.narrow_bridge_terrain
++
++    bridge_width_range: tuple[float, float] = MISSING
++    """Minimum and maximum bridge width; difficulty interpolates from max to min."""
++    bridge_height_max: float = 0.0
++    """Maximum absolute bridge height variation (in m)."""
++    pit_depth: float = -2.0
++    """Depth surrounding the bridge (in m)."""
++    platform_width: float = 2.0
++    """Width of the safe central spawn platform (in m)."""
++
++
+ @configclass
+ class HfDoubleColumnStakesTerrainCfg(HfTerrainBaseCfg):
+     """Configuration for a two-column plum-blossom stakes height field terrain."""
+diff --git a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py
+index 948f887..5837c1c 100644
+--- a/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py
++++ b/source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/terrains/terrain_cfg.py
+@@ -59,3 +59,52 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
+     },
+ )
+ """Rough terrains configuration."""
++
++
++S46_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
++    size=(8.0, 8.0),
++    border_width=50.0,
++    num_rows=10,
++    num_cols=20,
++    horizontal_scale=0.05,
++    vertical_scale=0.005,
++    slope_threshold=0.75,
++    use_cache=False,
++    sub_terrains={
++        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
++            proportion=0.10, step_height_range=(0.04, 0.20), step_width=0.30,
++            platform_width=2.0, border_width=0.5, holes=False,
++        ),
++        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
++            proportion=0.10, step_height_range=(0.04, 0.20), step_width=0.30,
++            platform_width=2.0, border_width=0.5, holes=False,
++        ),
++        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
++            proportion=0.10, grid_width=0.45, grid_height_range=(0.03, 0.20), platform_width=2.0,
++        ),
++        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
++            proportion=0.10, noise_range=(0.01, 0.10), noise_step=0.01,
++            downsampled_scale=0.10, border_width=0.25,
++        ),
++        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
++            proportion=0.05, slope_range=(0.05, 0.40), platform_width=2.0, border_width=0.25,
++        ),
++        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
++            proportion=0.05, slope_range=(0.05, 0.40), platform_width=2.0, border_width=0.25,
++        ),
++        "deep_pits": HfConcentricGapTerrainCfg(
++            proportion=0.10, gap_width_range=(0.10, 0.50), ground_width_range=(0.35, 0.65),
++            ground_height_max=0.025, gap_depth=-2.0, platform_width=2.0, border_width=0.25,
++        ),
++        "narrow_bridge": HfNarrowBridgeTerrainCfg(
++            proportion=0.10, bridge_width_range=(0.35, 0.80), bridge_height_max=0.03,
++            pit_depth=-2.0, platform_width=2.0, border_width=0.25,
++        ),
++        "plum_blossom_stakes": HfDoubleColumnStakesTerrainCfg(
++            proportion=0.30, stake_height_max=0.06, stake_side_range=(0.32, 0.55),
++            stake_gap_range=(0.05, 0.22), column_gap_range=(0.10, 0.22),
++            column_jitter=0.04, holes_depth=-2.0, platform_width=2.0, border_width=0.25,
++        ),
++    },
++)
++"""S46-specific curriculum with pits, narrow bridges, and plum-blossom stakes."""
