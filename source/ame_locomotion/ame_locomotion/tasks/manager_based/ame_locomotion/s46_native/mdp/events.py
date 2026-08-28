@@ -141,13 +141,24 @@ def apply_external_force_torque_stochastic(
     """
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    # clear the existing forces and torques
-    asset._external_force_b *= 0
-    asset._external_torque_b *= 0
-
     # resolve environment ids
     if env_ids is None:
         env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+
+    # IsaacLab 5.1 no longer exposes the old private force buffers.  Clear the
+    # selected bodies through the wrench composer so a force from the previous
+    # event interval cannot remain active when this stochastic event does not
+    # fire.  The wrench composer API avoids the deprecated
+    # `set_external_force_and_torque` warning that would spam the log every step.
+    body_ids = asset_cfg.body_ids
+    num_bodies = len(body_ids) if isinstance(body_ids, list) else asset.num_bodies
+    zero_shape = (len(env_ids), num_bodies, 3)
+    asset.permanent_wrench_composer.set_forces_and_torques(
+        torch.zeros(zero_shape, device=asset.device),
+        torch.zeros(zero_shape, device=asset.device),
+        body_ids=body_ids,
+        env_ids=env_ids,
+    )
 
     random_values = torch.rand(env_ids.shape, device=env_ids.device)
     mask = random_values < probability
@@ -155,13 +166,6 @@ def apply_external_force_torque_stochastic(
 
     if len(masked_env_ids) == 0:
         return
-
-    # resolve number of bodies
-    num_bodies = (
-        len(asset_cfg.body_ids)
-        if isinstance(asset_cfg.body_ids, list)
-        else asset.num_bodies
-    )
 
     # sample random forces and torques
     size = (len(masked_env_ids), num_bodies, 3)
@@ -177,6 +181,6 @@ def apply_external_force_torque_stochastic(
     )
     # set the forces and torques into the buffers
     # note: these are only applied when you call: `asset.write_data_to_sim()`
-    asset.set_external_force_and_torque(
-        forces, torques, env_ids=masked_env_ids, body_ids=asset_cfg.body_ids
+    asset.permanent_wrench_composer.set_forces_and_torques(
+        forces, torques, body_ids=asset_cfg.body_ids, env_ids=masked_env_ids
     )
