@@ -42,3 +42,18 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.ame_rsl_rl_ppo_cfg:G1AMEPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="AME-KuavoS46-Stage2-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            "ame_locomotion.tasks.manager_based.ame_locomotion.s46_native."
+            "velocity_env_cfg_s46_native:KuavoS46AMEStage2EnvCfg"
+        ),
+        "rsl_rl_cfg_entry_point": (
+            f"{agents.__name__}.ame_rsl_rl_ppo_cfg:KuavoS46AME2PPORunnerCfg"
+        ),
+    },
+)
