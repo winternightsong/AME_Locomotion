@@ -93,7 +93,9 @@ class KuavoS46ArticulationCfg(ArticulationCfg):
             },
             friction=0.0,
             min_delay=0,
-            max_delay=4,
+            # Light response/timing variation for the 10.5k continuation.
+            max_delay=2,
+            effort_noise_std=0.015,
             friction_static={
                 "leg_[lr]1_joint": 1.0, "leg_[lr][2-3]_joint": 0.5, "leg_[lr]4_joint": 1.0,
                 "leg_[lr][5-6]_joint": 0.2, "zarm_[lr]1_joint": 0.5,

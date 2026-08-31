@@ -128,6 +128,21 @@ class action_smoothness_l2(ManagerTermBase):
         super().__init__(cfg, env)
         self.prev_prev_action = None
 
+    def reset(self, env_ids=None) -> None:
+        """Clear second-order action history for environments that reset.
+
+        Isaac Lab clears ``action`` and ``prev_action`` per environment, so the
+        custom previous-previous state must be cleared for the same ids.  Keeping
+        the previous episode's action here creates a false jerk penalty on the
+        first step of the next episode.
+        """
+        if self.prev_prev_action is None:
+            return
+        if env_ids is None:
+            self.prev_prev_action.zero_()
+        else:
+            self.prev_prev_action[env_ids] = 0.0
+
     def __call__(self, env: ManagerBasedEnv) -> torch.Tensor:
         """Compute action smoothness penalty (second-order difference).
 
@@ -142,17 +157,18 @@ class action_smoothness_l2(ManagerTermBase):
             self.prev_prev_action = env.action_manager.prev_action.clone()
 
         # Compute second-order difference: action - 2*prev_action + prev_prev_action
-        action_smoothness_l2 = torch.sum(
-            torch.square(
-                env.action_manager.action
-                - 2 * env.action_manager.prev_action
-                + self.prev_prev_action
-            ),
-            dim=1,
-        )
+        action = torch.nan_to_num(env.action_manager.action, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
+        prev_action = torch.nan_to_num(
+            env.action_manager.prev_action, nan=0.0, posinf=10.0, neginf=-10.0
+        ).clamp(-10.0, 10.0)
+        prev_prev_action = torch.nan_to_num(
+            self.prev_prev_action, nan=0.0, posinf=10.0, neginf=-10.0
+        ).clamp(-10.0, 10.0)
+        second_difference = (action - 2 * prev_action + prev_prev_action).clamp(-20.0, 20.0)
+        action_smoothness_l2 = torch.sum(torch.square(second_difference), dim=1)
 
         # Update state for next step
-        self.prev_prev_action = env.action_manager.prev_action.clone()
+        self.prev_prev_action = prev_action.clone()
         return action_smoothness_l2
 
 

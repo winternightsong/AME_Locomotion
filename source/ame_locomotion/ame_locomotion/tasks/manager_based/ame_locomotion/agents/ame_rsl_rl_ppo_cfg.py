@@ -16,6 +16,9 @@ class KuavoS46AME2ActorCriticCfg(RslRlPpoActorCriticCfg):
 
 @configclass
 class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    # Last-resort guard at the environment boundary. The policy applies the
+    # same bound before this, so normal rollouts are unaffected.
+    clip_actions = 10.0
     num_steps_per_env = 24
     max_iterations = 10000
     save_interval = 100

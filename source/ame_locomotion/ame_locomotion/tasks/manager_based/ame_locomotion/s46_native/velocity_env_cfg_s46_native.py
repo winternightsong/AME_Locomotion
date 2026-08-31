@@ -33,6 +33,12 @@ from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg impo
 )
 
 
+# Single knob for the stage-2 dynamics curriculum.  A value of 1.0 restores
+# the complete LejuLab ranges; 0.0 is equivalent to the deterministic stage-1
+# dynamics.  Keep terrain difficulty on a separate curriculum.
+S46_STAGE2_DOMAIN_RAND_SCALE = 1.0
+
+
 S46_FINETUNE_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0), border_width=50.0, num_rows=10, num_cols=20,
     horizontal_scale=0.05, vertical_scale=0.005, slope_threshold=0.75,
@@ -220,7 +226,9 @@ class RewardsCfg:
     # -- task tracking
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        # Increase forward/planar velocity tracking priority so terrain
+        # curriculum can promote environments that actually make progress.
+        weight=1.3,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewTerm(
@@ -606,8 +614,44 @@ class KuavoS46AMEStage1PlayEnvCfg(KuavoS46AMEStage1EnvCfg):
 
 @configclass
 class KuavoS46AMEStage2EnvCfg(KuavoS46RoughEnvCfg):
-    """Full fine-tuning stage with all noise, randomization and penalties enabled."""
+    """Fine-tuning stage with gradually scaled LejuLab domain randomization."""
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.terrain.terrain_generator = S46_FINETUNE_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = S46_HARD_TERRAINS_CFG
+
+        s = S46_STAGE2_DOMAIN_RAND_SCALE
+        if not 0.0 <= s <= 1.0:
+            raise ValueError(f"S46_STAGE2_DOMAIN_RAND_SCALE must be in [0, 1], got {s}")
+
+        # Additive randomization ranges.
+        self.events.add_joint_default_pos.params["pos_distribution_params"] = (-0.1 * s, 0.1 * s)
+        self.events.add_base_mass.params["mass_distribution_params"] = (-5.0 * s, 5.0 * s)
+        self.events.randomize_rigid_body_com.params["com_range"] = {
+            axis: (-0.1 * s, 0.1 * s) for axis in ("x", "y", "z")
+        }
+
+        # Multiplicative randomization ranges around the nominal value 1.0.
+        self.events.scale_link_mass.params["mass_distribution_params"] = (1.0 - 0.2 * s, 1.0 + 0.2 * s)
+        self.events.scale_actuator_gains.params["stiffness_distribution_params"] = (
+            1.0 - 0.2 * s, 1.0 + 0.2 * s
+        )
+        self.events.scale_actuator_gains.params["damping_distribution_params"] = (
+            1.0 - 0.2 * s, 1.0 + 0.2 * s
+        )
+        self.events.scale_joint_parameters.params["armature_distribution_params"] = (
+            1.0 - 0.5 * s, 1.0 + 0.5 * s
+        )
+
+        # Initial-state randomization is scaled with the same curriculum knob.
+        self.events.reset_robot_joints.params["position_range"] = (1.0 - 0.5 * s, 1.0 + 0.5 * s)
+        self.events.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
+        self.events.reset_base.params["velocity_range"] = {
+            axis: (-0.3 * s, 0.3 * s)
+            for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+        }
+
+        # These are discrete robustness changes rather than parameter errors.
+        # Introduce them only after the scaled dynamics have converged.
+        self.events.base_external_force_torque = None
+        self.terminations.bad_orientation = None

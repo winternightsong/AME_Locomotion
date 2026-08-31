@@ -29,6 +29,9 @@ class ActorCriticEncoder(nn.Module):
         num_heads=16,  # Number of attention heads
         cnn_downsample=True,
         attach_global=False,  # Add max-pooled global feature to query and policy input
+        action_mean_clip=10.0,
+        action_sample_clip=10.0,
+        encoded_obs_clip=100.0,
         **kwargs,
     ):
         if kwargs:
@@ -44,6 +47,9 @@ class ActorCriticEncoder(nn.Module):
         self.L, self.W, self.coord_dim = map_scan_dim
         self.cnn_downsample = cnn_downsample
         self.attach_global = attach_global
+        self.action_mean_clip = float(action_mean_clip)
+        self.action_sample_clip = float(action_sample_clip)
+        self.encoded_obs_clip = float(encoded_obs_clip)
 
         # Option A: concatenate coordinates to CNN features
         # self.cnn_output_dim = mha_dim - 3  # d-3
@@ -166,6 +172,9 @@ class ActorCriticEncoder(nn.Module):
         height_map = map_scan
 
         height_map = height_map.permute(0, 3, 1, 2)
+        height_map = torch.nan_to_num(
+            height_map, nan=0.0, posinf=self.encoded_obs_clip, neginf=-self.encoded_obs_clip
+        ).clamp(-self.encoded_obs_clip, self.encoded_obs_clip)
         cnn_features = self.map_cnn(height_map)
         if not self.cnn_downsample:
             cnn_features = cnn_features.permute(0, 2, 3, 1).reshape(-1, self.L * self.W, self.cnn_output_dim)
@@ -212,8 +221,12 @@ class ActorCriticEncoder(nn.Module):
         if self.attach_global:
             encoded_obs = torch.cat([global_features_max, encoded_obs], dim=-1)
 
-        if torch.isnan(encoded_obs).any() or torch.isinf(encoded_obs).any():
-            print(f"Warning: encoded_obs contains NaN or Inf: {encoded_obs}")
+        if not torch.isfinite(encoded_obs).all():
+            bad = int((~torch.isfinite(encoded_obs)).sum().item())
+            print(f"Warning: encoded_obs contains {bad} non-finite values; replacing them")
+        encoded_obs = torch.nan_to_num(
+            encoded_obs, nan=0.0, posinf=self.encoded_obs_clip, neginf=-self.encoded_obs_clip
+        ).clamp(-self.encoded_obs_clip, self.encoded_obs_clip)
 
         return encoded_obs, attention_weights
 
@@ -237,18 +250,24 @@ class ActorCriticEncoder(nn.Module):
 
     def update_distribution(self, obs):
         if torch.isnan(obs).any() or torch.isinf(obs).any():
-            print(f"Warning: obs contains NaN or Inf: {obs}")
+            bad = int((~torch.isfinite(obs)).sum().item())
+            print(f"Warning: actor obs contains {bad} non-finite values; replacing them with zero")
+            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
 
         encoded_obs, _ = self._encode_terrain(obs)
         mean = self.actor(encoded_obs)
 
         if torch.isnan(mean).any() or torch.isinf(mean).any():
-            print(f"Warning: mean contains NaN or Inf: {mean}")
+            bad = int((~torch.isfinite(mean)).sum().item())
+            print(f"Warning: actor mean contains {bad} non-finite values; using finite fallback")
+        mean = torch.nan_to_num(
+            mean, nan=0.0, posinf=self.action_mean_clip, neginf=-self.action_mean_clip
+        ).clamp(-self.action_mean_clip, self.action_mean_clip)
 
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
         elif self.noise_std_type == "log":
-            std = torch.exp(self.log_std).expand_as(mean)
+            std = torch.exp(self.log_std.clamp(-5.0, 2.0)).expand_as(mean)
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         self.distribution = Normal(mean, std)
@@ -257,13 +276,20 @@ class ActorCriticEncoder(nn.Module):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
         self.update_distribution(actor_obs)
-        return self.distribution.sample()
+        action = self.distribution.sample()
+        return torch.nan_to_num(
+            action, nan=0.0, posinf=self.action_sample_clip, neginf=-self.action_sample_clip
+        ).clamp(-self.action_sample_clip, self.action_sample_clip)
 
     def act_inference(self, obs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
         encoded_obs, attention_weights = self._encode_terrain(actor_obs)
-        return self.actor(encoded_obs), attention_weights
+        action = self.actor(encoded_obs)
+        action = torch.nan_to_num(
+            action, nan=0.0, posinf=self.action_mean_clip, neginf=-self.action_mean_clip
+        ).clamp(-self.action_mean_clip, self.action_mean_clip)
+        return action, attention_weights
 
     def evaluate(self, obs, **kwargs):
         critic_obs = self.get_critic_obs(obs)
@@ -271,7 +297,9 @@ class ActorCriticEncoder(nn.Module):
         encoded_obs, _ = self._encode_terrain(critic_obs)
         value = self.critic(encoded_obs)
         if torch.isnan(value).any() or torch.isinf(value).any():
-            print(f"Warning: critic value contains NaN or Inf, {value}")
+            bad = int((~torch.isfinite(value)).sum().item())
+            print(f"Warning: critic value contains {bad} non-finite values; using finite fallback")
+            value = torch.nan_to_num(value, nan=0.0, posinf=100.0, neginf=-100.0)
         return value
 
     def get_actor_obs(self, obs):
@@ -279,7 +307,9 @@ class ActorCriticEncoder(nn.Module):
         for obs_group in self.obs_groups["policy"]:
             group_data = obs[obs_group]
             if torch.isnan(group_data).any() or torch.isinf(group_data).any():
-                print(f"Warning: obs_group '{obs_group}' contains NaN or Inf: {group_data}")
+                bad = int((~torch.isfinite(group_data)).sum().item())
+                print(f"Warning: policy obs_group '{obs_group}' contains {bad} non-finite values; replacing them")
+                group_data = torch.nan_to_num(group_data, nan=0.0, posinf=1.0e4, neginf=-1.0e4)
             obs_list.append(group_data)
         return torch.cat(obs_list, dim=-1)
 
@@ -288,7 +318,9 @@ class ActorCriticEncoder(nn.Module):
         for obs_group in self.obs_groups["critic"]:
             group_data = obs[obs_group]
             if torch.isnan(group_data).any() or torch.isinf(group_data).any():
-                print(f"Warning: obs_group '{obs_group}' contains NaN or Inf: {group_data}")
+                bad = int((~torch.isfinite(group_data)).sum().item())
+                print(f"Warning: critic obs_group '{obs_group}' contains {bad} non-finite values; replacing them")
+                group_data = torch.nan_to_num(group_data, nan=0.0, posinf=1.0e4, neginf=-1.0e4)
             obs_list.append(group_data)
         return torch.cat(obs_list, dim=-1)
 

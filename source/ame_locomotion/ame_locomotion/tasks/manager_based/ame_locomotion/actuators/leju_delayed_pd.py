@@ -24,6 +24,7 @@ class LejuDelayedPDActuator(DelayedPDActuator):
         self.effort_weaken_velocity_limit = self._parse_joint_parameter(
             self.cfg.effort_weaken_velocity_limit, 0.0
         )
+        self.effort_noise_std = float(self.cfg.effort_noise_std)
 
     def reset(self, env_ids: Sequence[int]):
         super().reset(env_ids)
@@ -47,6 +48,11 @@ class LejuDelayedPDActuator(DelayedPDActuator):
                 + self.friction_dynamic * joint_vel
             )
         )
+        # Small actuator-side output noise, expressed as a fraction of the
+        # nominal per-joint effort limit.  It is applied before saturation so
+        # the physical torque limit remains hard.
+        if self.effort_noise_std > 0.0:
+            self.computed_effort = self.computed_effort + torch.randn_like(self.computed_effort) * self.saturation_effort * self.effort_noise_std
         self.applied_effort = self._clip_effort(self.computed_effort)
         control_action.joint_efforts = self.applied_effort
         control_action.joint_positions = None
@@ -76,3 +82,4 @@ class LejuDelayedPDActuatorCfg(DelayedPDActuatorCfg):
     friction_static: float | dict[str, float] = 0.0
     friction_activation_vel: float = torch.inf
     friction_dynamic: float | dict[str, float] = 0.0
+    effort_noise_std: float = 0.0

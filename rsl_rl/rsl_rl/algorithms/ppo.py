@@ -176,9 +176,41 @@ class PPO:
         )
 
     def update(self):  # noqa: C901
+        # Rollout collection is rank-local.  A rank that encounters an invalid
+        # simulator sample can arrive here earlier/later than its peers.  Align
+        # all ranks before the first finite-status all-reduce so that these
+        # scalar collectives can never be paired with a collective from the
+        # previous/next PPO update.
+        if self.is_multi_gpu:
+            torch.distributed.barrier()
+
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        valid_updates = 0
+        skipped_nonfinite_batches = 0
+
+        def _iter_tensors(value):
+            if isinstance(value, torch.Tensor):
+                yield value
+            elif isinstance(value, dict) or hasattr(value, "values"):
+                for item in value.values():
+                    yield from _iter_tensors(item)
+            elif isinstance(value, (tuple, list)):
+                for item in value:
+                    yield from _iter_tensors(item)
+
+        def _all_ranks_finite(*values) -> bool:
+            local_ok = all(
+                bool(torch.isfinite(tensor).all().item())
+                for value in values
+                for tensor in _iter_tensors(value)
+                if tensor.is_floating_point()
+            )
+            flag = torch.tensor(1 if local_ok else 0, device=self.device, dtype=torch.int32)
+            if self.is_multi_gpu:
+                torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MIN)
+            return bool(flag.item())
         # -- RND loss
         if self.rnd:
             mean_rnd_loss = 0
@@ -209,6 +241,27 @@ class PPO:
             hid_states_batch,
             masks_batch,
         ) in generator:
+
+            # A single corrupted rollout must not poison the optimizer on every
+            # DDP rank. All ranks make the same skip decision to stay synchronized.
+            if not _all_ranks_finite(
+                obs_batch,
+                actions_batch,
+                target_values_batch,
+                advantages_batch,
+                returns_batch,
+                old_actions_log_prob_batch,
+                old_mu_batch,
+                old_sigma_batch,
+            ):
+                skipped_nonfinite_batches += 1
+                continue
+
+            # Normal trajectories are far inside these bounds. The clamps only
+            # reject catastrophic critic targets/advantages before squaring.
+            target_values_batch = target_values_batch.clamp(-100.0, 100.0)
+            returns_batch = returns_batch.clamp(-100.0, 100.0)
+            advantages_batch = advantages_batch.clamp(-20.0, 20.0)
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
@@ -255,6 +308,13 @@ class PPO:
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
             entropy_batch = self.policy.entropy[:original_batch_size]
+
+            if not _all_ranks_finite(
+                actions_log_prob_batch, value_batch, mu_batch, sigma_batch, entropy_batch
+            ):
+                skipped_nonfinite_batches += 1
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -313,6 +373,11 @@ class PPO:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+
+            if not _all_ranks_finite(loss, surrogate_loss, value_loss, entropy_batch):
+                skipped_nonfinite_batches += 1
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
 
             # Symmetry loss
             if self.symmetry:
@@ -378,9 +443,27 @@ class PPO:
                 self.rnd_optimizer.zero_grad()  # type: ignore
                 rnd_loss.backward()
 
+            # Do not all-reduce a non-finite gradient: one bad rank would poison
+            # every peer before gradient clipping gets a chance to run.
+            grads = [param.grad for param in self.policy.parameters() if param.grad is not None]
+            if not _all_ranks_finite(grads):
+                skipped_nonfinite_batches += 1
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.rnd_optimizer:
+                    self.rnd_optimizer.zero_grad(set_to_none=True)
+                continue
+
             # Collect gradients from all GPUs
             if self.is_multi_gpu:
                 self.reduce_parameters()
+
+            grads = [param.grad for param in self.policy.parameters() if param.grad is not None]
+            if not _all_ranks_finite(grads):
+                skipped_nonfinite_batches += 1
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.rnd_optimizer:
+                    self.rnd_optimizer.zero_grad(set_to_none=True)
+                continue
 
             # Apply the gradients
             # -- For PPO
@@ -394,6 +477,7 @@ class PPO:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            valid_updates += 1
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -402,7 +486,7 @@ class PPO:
                 mean_symmetry_loss += symmetry_loss.item()
 
         # -- For PPO
-        num_updates = self.num_learning_epochs * self.num_mini_batches
+        num_updates = max(valid_updates, 1)
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
@@ -420,6 +504,7 @@ class PPO:
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "skipped_nonfinite_batches": float(skipped_nonfinite_batches),
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
